@@ -9,7 +9,7 @@
 
 # Problem Statement
 
-the !(CUT-AND-PASTE data augmentation strategy)[https://openaccess.thecvf.com/content/CVPR2021/papers/Ghiasi_Simple_Copy-Paste_Is_a_Strong_Data_Augmentation_Method_for_Instance_CVPR_2021_paper.pdf] has shown to be a strong data augmentation strategy for object detection tasks. However, most implements assume that there is only a single annotation per image. In the case of multiple annotations per image, most implementations can prove problematic as randomly pasting a mask can result in overlapping objects and invalid annotations.
+the ![CUT-AND-PASTE data augmentation strategy](https://openaccess.thecvf.com/content/CVPR2021/papers/Ghiasi_Simple_Copy-Paste_Is_a_Strong_Data_Augmentation_Method_for_Instance_CVPR_2021_paper.pdf) has shown to be a strong data augmentation strategy for object detection tasks. However, most implements assume that there is only a single annotation per image. In the case of multiple annotations per image, most implementations can prove problematic as randomly pasting a mask can result in overlapping objects and invalid annotations.
 
 # Solution
 
