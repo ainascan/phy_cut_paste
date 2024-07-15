@@ -1,13 +1,28 @@
 import os
 import json
-import time
+from typing import Iterator
+from dataclasses import dataclass
 
 import pymunk as pm
 import numpy as np
 import cv2
 
 
-def load_coco_data(coco_file):
+@dataclass
+class AugmentedCocoImage:
+    
+    coco_image: dict
+    coco_annotations: list[dict]
+    
+    original_image: np.ndarray
+    original_contours: list[np.ndarray]
+    
+    augmented_image: np.ndarray
+    augmented_contours: list[np.ndarray]
+    
+
+
+def load_coco_data(coco_file) -> list[tuple[dict, list[dict]]]:
     with open(coco_file, 'r') as f:
         coco_data = json.load(f)
         
@@ -15,8 +30,15 @@ def load_coco_data(coco_file):
     
     data = []
     
+    # build a map. Signficantly faster than searching...
+    annotation_map = {}
+    for annotation in coco_data['annotations']:
+        if annotation['image_id'] not in annotation_map:
+            annotation_map[annotation['image_id']] = []
+        annotation_map[annotation['image_id']].append(annotation)
+    
     for image in images:
-        annotations = list(filter(lambda x: x['image_id'] == image['id'], coco_data['annotations']))
+        annotations = annotation_map.get(image['id'], [])
         
         if len(annotations) == 0:
             continue
@@ -30,15 +52,24 @@ def simulate_coco(
     coco_file: str,
     image_dir: str,
     image_backdrop_path: str,
-) -> list[np.ndarray]:
+) -> Iterator[AugmentedCocoImage]:
+    """Provides an iterator that yields augmented images given a coco file, image directory, and backdrop image.
+
+    Args:
+        coco_file (str): coco file path
+        image_dir (str): image directory path to the coco images
+        image_backdrop_path (str): image path to the backdrop image
+
+    Raises:
+        ValueError: If the backdrop image is not the same shape as the coco image
+
+    Yields:
+        Iterator[AugmentedCocoImage]: An iterator that yields augmented images
+    """
 
     coco_data = load_coco_data(coco_file)
 
     backdrop = cv2.imread(image_backdrop_path)
-    
-    frames = []
-    
-    new_coco_data = []
     
     for image, annotations in coco_data:
         
@@ -54,12 +85,18 @@ def simulate_coco(
             contours.append(np.array(annotation['segmentation'][0]).reshape(-1, 2))
             
         augmented_frame, new_contours = simulate(frame, contours, backdrop)
-        new_coco_data.append((augmented_frame, new_contours))
+        
+        yield AugmentedCocoImage(
+            coco_image=image,
+            coco_annotations=annotations,
+            original_image=frame,
+            original_contours=contours,
+            augmented_image=augmented_frame,
+            augmented_contours=new_contours,
+        )
 
-    return new_coco_data
 
-
-def update_mask(mask, translation, rotation):
+def update_mask(mask, translation, rotation) -> np.ndarray:
     """Applys a translation and rotation to a mask
 
     Args:
@@ -68,7 +105,7 @@ def update_mask(mask, translation, rotation):
         rotation (np.ndarray): The rotation in radians to apply
 
     Returns:
-        np.ndarray: _description_
+        np.ndarray: The updated mask
     """
     return cv2.warpAffine(mask, np.array([
         [np.cos(rotation), -np.sin(rotation), translation[0]],
@@ -76,7 +113,17 @@ def update_mask(mask, translation, rotation):
     ]), (mask.shape[1], mask.shape[0]))
 
 
-def update_contour(contour, translation, rotation):
+def update_contour(contour, translation, rotation) -> np.ndarray:
+    """Applies a translation and rotation to a contour
+
+    Args:
+        contour (np.ndarray): The contour to apply the transformation to
+        translation (np.ndarray): The 2D translation to apply
+        rotation (float): The rotation in radians to apply
+
+    Returns:
+        np.ndarray: The updated contour
+    """
     contour += translation
 
     # rotate the contour around it's center
@@ -121,22 +168,21 @@ def simulate(
     """Simulates the movement of the contours in the image and generates a new image given the provided backdrop.
 
     Args:
-        image (np.ndarray): _description_
-        contours (list): _description_
-        backdrop (np.ndarray): _description_
-        force_magnitude (float, optional): _description_. Defaults to 10_000.
-        force_offset (np.ndarray, optional): _description_. Defaults to 100.
-        elasticitiy (float, optional): _description_. Defaults to 0.95.
-        friction (float, optional): _description_. Defaults to 0.1.
-        timesteps (int, optional): _description_. Defaults to 1000.
-        threads (int, optional): _description_. Defaults to 4.
-        iterations (int, optional): _description_. Defaults to 10.
+        image (np.ndarray): The image to simulate the contours on
+        contours (list): The list of contours to simulate
+        backdrop (np.ndarray): The backdrop image to layer the simulated contours on
+        force_magnitude (float, optional): Magnitude of the random force. Defaults to 10_000.
+        force_offset (np.ndarray, optional): Random offset from center of gravity to apply force vector. Defaults to 100.
+        elasticitiy (float, optional): Defaults to 0.95.
+        friction (float, optional): Defaults to 0.1.
+        timesteps (int, optional): Defaults to 1000.
+        threads (int, optional): Defaults to 4.
+        iterations (int, optional): Improves accuracy of simulator. Defaults to 10.
 
     Returns:
         tuple[np.ndarray, list[np.ndarray]]: The new image and the list of new contours
     """
-    
-    
+
     space = pm.Space(threaded=True)
     space.gravity = (0.0, 0.0)
     space.threads = threads
@@ -161,8 +207,8 @@ def simulate(
         offset = np.random.rand(2) * force_offset - (force_offset / 2)
         center += offset
         
+        # apply a random force to the object
         force = np.random.rand(2) * force_magnitude - (force_magnitude / 2)
-    
         body.apply_force_at_world_point(force.tolist(), center)
     
     # add boundaries at the image edges
@@ -199,8 +245,6 @@ def simulate(
 
     # layer the masks on top of each other
     compiled = np.zeros_like(image)
-
-    # layer them faster than a for loop
     for mask in masks:
         compiled = cv2.bitwise_or(compiled, mask)
 
@@ -213,14 +257,3 @@ def simulate(
 
     # combine the two images to get the final image!
     return cv2.bitwise_or(compiled, background), contours
-
-
-if __name__ == "__main__":
-    augmented = simulate_coco(
-        coco_file='coco.json',
-        image_dir='/home/jack/Mounts/CoffeeDataset/raw_images/bay_view_dead_leaves_backdrop',
-        image_backdrop_path='/home/jack/Mounts/DiskOne/kona_coffee/devin_images/20240316_114709.jpg',
-    )
-    
-    for i, (augmented_frame, contours) in enumerate(augmented):
-        cv2.imwrite(f'augmented_{i}.jpg', augmented_frame)

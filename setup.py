@@ -5,12 +5,13 @@ setup(
     version='0.1.0',
     description='Cut-And-Paste Data Augmentation for Multiple Annotations',
     author='Jack Mead',
-    author_email='your@email.com',
+    author_email='jackmead515@gmail.com',
     url='https://github.com/ainascan/phy_cut_paste',
     packages=find_packages(),
     install_requires=[
         "pymunk",
         "numpy",
+        "opencv-python",
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
