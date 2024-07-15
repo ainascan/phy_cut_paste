@@ -41,6 +41,9 @@ def simulate_coco(
     new_coco_data = []
     
     for image, annotations in coco_data:
+        
+        print(os.path.join(image_dir, image['file_name']))
+        
         frame = cv2.imread(os.path.join(image_dir, image['file_name']))
         
         if frame.shape != backdrop.shape:
