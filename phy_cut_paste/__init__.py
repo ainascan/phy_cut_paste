@@ -1,3 +1,3 @@
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 
-from .simulate import simulate, simulate_coco, AugmentedCocoImage
+from .simulate import simulate, simulate_coco, AugmentedCocoImage, ContourSimulationConfig

@@ -10,6 +10,9 @@ import cv2
 
 @dataclass
 class AugmentedCocoImage:
+    """
+    A dataclass that represents the result of a coco image simulation.
+    """
     
     coco_image: dict
     coco_annotations: list[dict]
@@ -21,6 +24,18 @@ class AugmentedCocoImage:
     augmented_contours: list[np.ndarray]
     
 
+@dataclass
+class ContourSimulationConfig:
+    """
+    Configurations for a specific contour
+    """
+    mass: float = 1
+    force_magnitude: float = 10_000
+    force_offset: np.ndarray = np.array([100, 100])
+    elasticitiy: float = 0.95
+    friction: float = 0.1
+    body_type: str = 'dynamic'
+    
 
 def load_coco_data(coco_file) -> list[tuple[dict, list[dict]]]:
     with open(coco_file, 'r') as f:
@@ -157,11 +172,11 @@ def simulate(
     image: np.ndarray,
     contours: list,
     backdrop: np.ndarray,
-    force_magnitude: float = 10_000,
-    force_offset: np.ndarray = 100,
-    elasticitiy: float = 0.95,
-    friction: float = 0.1,
+    contour_configs: list[ContourSimulationConfig] = None,
+    boundary_elasticity: float = 0.95,
+    boundary_friction: float = 0.1,
     timesteps: int = 1000,
+    timestep_delta: float = 1 / 60,
     threads: int = 4,
     iterations: int = 10,
 ) -> tuple[np.ndarray, list[np.ndarray]]:
@@ -171,11 +186,11 @@ def simulate(
         image (np.ndarray): The image to simulate the contours on
         contours (list): The list of contours to simulate
         backdrop (np.ndarray): The backdrop image to layer the simulated contours on
-        force_magnitude (float, optional): Magnitude of the random force. Defaults to 10_000.
-        force_offset (np.ndarray, optional): Random offset from center of gravity to apply force vector. Defaults to 100.
-        elasticitiy (float, optional): Defaults to 0.95.
-        friction (float, optional): Defaults to 0.1.
-        timesteps (int, optional): Defaults to 1000.
+        contour_configs (list[ContourSimulationConfig], optional): The list of configurations for each contour. Defaults to None.
+        boundary_elasticitiy (float, optional): Defaults to 0.95.
+        boundary_friction (float, optional): Defaults to 0.1.
+        timesteps (int, optional): Timestamps in seconds. Defaults to 1000.
+        timestep_delta (float, optional): Defaults to 1 / 60.
         threads (int, optional): Defaults to 4.
         iterations (int, optional): Improves accuracy of simulator. Defaults to 10.
 
@@ -190,27 +205,40 @@ def simulate(
     
     objects = []
     
-    for contour in contours:
+    for i, contour in enumerate(contours):
         c = contour.astype(float).tolist()
+        
+        configs = contour_configs[i] if contour_configs else ContourSimulationConfig()
+        if configs is None:
+            configs = ContourSimulationConfig()
+            
+        body_type = pm.Body.DYNAMIC
+        if configs.body_type == 'static':
+            body_type = pm.Body.STATIC
 
-        body = pm.Body(1, pm.moment_for_poly(1, c))         
+        body = pm.Body(
+            configs.mass,
+            pm.moment_for_poly(configs.mass, c),
+            body_type
+        )         
         poly = pm.Poly(body, c)
-        poly.mass = 1
-        poly.elasticity = elasticitiy
-        poly.friction = friction
+        poly.mass = configs.mass
+        poly.elasticity = configs.elasticitiy
+        poly.friction = configs.friction
 
         space.add(body, poly)
         objects.append((contour, body))
 
         # offet center by a random amount
         center = poly.cache_bb().center()
-        offset = np.random.rand(2) * force_offset - (force_offset / 2)
+        offset = np.random.rand(2) * configs.force_offset - (configs.force_offset / 2)
         center += offset
         
         # apply a random force to the object
-        force = np.random.rand(2) * force_magnitude - (force_magnitude / 2)
+        force = np.random.rand(2) * configs.force_magnitude - (configs.force_magnitude / 2)
         body.apply_force_at_world_point(force.tolist(), center)
-    
+
+
     # add boundaries at the image edges
     height, width = image.shape[:2]
     boundaries = [
@@ -221,13 +249,13 @@ def simulate(
     ]
     
     for boundary in boundaries:
-        boundary.friction = friction
-        boundary.elasticity = elasticitiy
+        boundary.friction = boundary_friction
+        boundary.elasticity = boundary_elasticity
     
     space.add(*boundaries)
     
     for _ in range(timesteps):
-        space.step(1 / 60)
+        space.step(timestep_delta)
 
     masks = []
     contours = []
