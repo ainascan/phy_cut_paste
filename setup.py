@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='phy_cut_paste',
-    version='0.2.1',
+    version='0.3.0',
     description='Cut-And-Paste Data Augmentation for Multiple Annotations',
     author='Jack Mead',
     author_email='jackmead515@gmail.com',
@@ -13,6 +13,10 @@ setup(
         "numpy",
         "opencv-python",
     ],
+    # not required dependencies
+    extras_require={
+        "dev": ["pygame"], 
+    },
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',

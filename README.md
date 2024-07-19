@@ -25,6 +25,8 @@ pip install phy-cut-paste
 
 ## Augment All Files From a Coco Dataset
 
+All the annotations within each image will be cut and pasted into the simulation and augmented.
+
 ```python
 
 from phy_cut_paste import simulate_coco, AugmentedCocoImage
@@ -41,6 +43,8 @@ if __name__ == "__main__":
 ```
 
 ## Custom Augmentation
+
+Pass in a list of contours and they will be cropped out of the image and pasted into the simulation
 
 ```python
 from phy_cut_paste import simulate
@@ -62,4 +66,54 @@ augmented_image, augmented_contours = simulate(
 cv2.drawContours(augmented_image, augmented_contours, -1, (0, 255, 0), 2)
 
 cv2.imwrite('augmented.jpg', augmented_image)
+```
+
+## Custom Augmentation from Multiple Image Masks
+
+Pass in a list of colored masks (the background is black but the object is colored and cropped) and they will be pasted into the simulation
+You can use a `bitwise_and` operation to create these masks
+
+```python
+frame = cv2.imread('/path/to/frame.jpg')
+contour = np.array([[0, 0], [0, 100], [100, 100], [100, 0]])
+bbox = cv2.boundingRect(contour)
+
+# create the mask
+mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+cv2.drawContours(mask, [contour], -1, (255, 255, 255), -1)
+mask = cv2.bitwise_and(frame, frame, mask=mask)
+
+# crop the mask
+mask = mask[bbox[1]:bbox[1]+bbox[3], bbox[0]:bbox[0]+bbox[2]]
+
+# save to disk
+cv2.imwrite('mask.jpg', mask)
+```
+
+```python
+from phy_cut_paste import simulate_masks
+
+color_masks = [cv2.imread(path) for path in masks]
+backdrop_image = cv2.imread('/path/to/backdrop.jpg')
+
+augmented_image, augmented_contours = simulate_masks(
+    masks=color_masks,
+    backdrop=backdrop_image,
+)
+
+cv2.drawContours(augmented_image, augmented_contours, -1, (0, 255, 0), 2)
+
+cv2.imwrite('augmented.jpg', augmented_image)
+```
+
+# For Development
+
+## Build
+```
+python3 setup.py sdist bdist_wheel
+```
+
+## Publish
+```
+python3 -m twine upload --skip-existing dist/*
 ```

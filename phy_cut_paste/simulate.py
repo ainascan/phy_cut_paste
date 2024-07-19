@@ -168,6 +168,19 @@ def get_mask(image, contour):
     return cv2.bitwise_and(image, mask)
 
 
+def get_binary_mask(color_mask):
+    """Generates a binary mask from a color mask
+
+    Args:
+        color_mask (np.ndarray): The color mask to generate the binary mask from
+
+    Returns:
+        np.ndarray: The binary mask
+    """
+    binary_mask = cv2.cvtColor(color_mask, cv2.COLOR_BGR2GRAY)
+    return cv2.threshold(binary_mask, 0, 255, cv2.THRESH_BINARY)[1]
+
+
 def simulate(
     image: np.ndarray,
     contours: list,
@@ -285,3 +298,155 @@ def simulate(
 
     # combine the two images to get the final image!
     return cv2.bitwise_or(compiled, background), contours
+
+
+def simulate_masks(
+    masks: list[np.ndarray],
+    backdrop: np.ndarray,
+    mask_configs: list[ContourSimulationConfig] = None,
+    boundary_elasticity: float = 0.95,
+    boundary_friction: float = 0.1,
+    timesteps: int = 1000,
+    timestep_delta: float = 1 / 60,
+    threads: int = 4,
+    iterations: int = 10,
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Simulates the movement of the individual masks and generates a new image given the provided backdrop. This allows
+    for more control by bringing in masks from more than one image. The masks are assumed to be colored masks where the
+    object is cropped and the background is black. The masks must be able to fit within the backdrop image otherwise
+    they are subject strange errors in the physics simulation.
+
+    Args:
+        masks (list[np.ndarray]): The list of masks to simulate
+        backdrop (np.ndarray): The backdrop image to layer the simulated contours on
+        mask_configs (list[ContourSimulationConfig], optional): The list of configurations for each contour. Defaults to None.
+        boundary_elasticitiy (float, optional): Defaults to 0.95.
+        boundary_friction (float, optional): Defaults to 0.1.
+        timesteps (int, optional): Timestamps in seconds. Defaults to 1000.
+        timestep_delta (float, optional): Defaults to 1 / 60.
+        threads (int, optional): Defaults to 4.
+        iterations (int, optional): Improves accuracy of simulator. Defaults to 10.
+
+    Returns:
+        tuple[np.ndarray, list[np.ndarray]]: The new image and the list of new contours
+    """
+
+    space = pm.Space(threaded=True)
+    space.gravity = (0.0, 0.0)
+    space.threads = threads
+    space.iterations = iterations
+    
+    resized_masks = []
+    
+    # update the masks to be sized to the backdrop
+    for i, omask in enumerate(masks):
+        original_width, original_height = omask.shape[:2]
+        hypotenuse = np.sqrt(original_width ** 2 + original_height ** 2)
+        
+        mask = omask.copy()
+        
+        # add black padding to the height and width
+        mask = cv2.copyMakeBorder(mask, 0, backdrop.shape[0] - mask.shape[0], 0, backdrop.shape[1] - mask.shape[1], cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        
+        # calculate the maximum translation possible.
+        max_trans_x = backdrop.shape[1] - hypotenuse
+        max_trans_y = backdrop.shape[0] - hypotenuse
+
+        # randomly translate and rotate the mask
+        rotation = np.random.rand() * 2 * np.pi
+        translation = (np.random.rand(2) * np.array([max_trans_x, max_trans_y])) + hypotenuse
+        
+        # clamp translation to the image bounds
+        translation[0] = np.clip(translation[0], 0, max_trans_x)
+        translation[1] = np.clip(translation[1], 0, max_trans_y)  
+
+        resized_masks.append(update_mask(mask, translation, rotation))
+
+    objects = []
+    
+    for i, mask in enumerate(resized_masks):
+        # we assume a single contour in the mask
+        contour = cv2.findContours(get_binary_mask(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0][0].reshape(-1, 2).astype(float)
+        
+        c = contour.astype(float).tolist()
+        
+        configs = mask_configs[i] if mask_configs else ContourSimulationConfig()
+        if configs is None:
+            configs = ContourSimulationConfig()
+            
+        body_type = pm.Body.DYNAMIC
+        if configs.body_type == 'static':
+            body_type = pm.Body.STATIC
+
+        body = pm.Body(
+            configs.mass,
+            pm.moment_for_poly(configs.mass, c),
+            body_type
+        )         
+        #body.position = (np.random.rand(2) * np.array(backdrop.shape[:2])).tolist()
+        poly = pm.Poly(body, c)
+        poly.mass = configs.mass
+        poly.elasticity = configs.elasticitiy
+        poly.friction = configs.friction
+
+        space.add(body, poly)
+        objects.append((contour, body))
+
+        # offet center by a random amount
+        center = poly.cache_bb().center()
+        offset = np.random.rand(2) * configs.force_offset - (configs.force_offset / 2)
+        center += offset
+        
+        # apply a random force to the object
+        force = np.random.rand(2) * configs.force_magnitude - (configs.force_magnitude / 2)
+        body.apply_force_at_world_point(force.tolist(), center)
+
+
+    # add boundaries at the image edges
+    height, width = backdrop.shape[:2]
+    boundaries = [
+        pm.Segment(space.static_body, (0, 0), (width, 0), 2),
+        pm.Segment(space.static_body, (width, 0), (width, height), 2),
+        pm.Segment(space.static_body, (width, height), (0, height), 2),
+        pm.Segment(space.static_body, (0, height), (0, 0), 2),
+    ]
+    
+    for boundary in boundaries:
+        boundary.friction = boundary_friction
+        boundary.elasticity = boundary_elasticity
+    
+    space.add(*boundaries)
+    
+    for _ in range(timesteps):
+        space.step(timestep_delta)
+
+    new_masks = []
+    new_contours = []
+    
+    index = 0
+    for contour, body in objects:
+        mask = resized_masks[index]
+        rotation = body.angle
+        translation = np.array(body.position)
+
+        # get the mask of the contour
+        new_mask = update_mask(mask, translation, rotation)
+        new_contours.append(update_contour(contour, translation, rotation))
+        new_masks.append(new_mask)
+        
+        index += 1
+
+    # layer the masks on top of each other
+    compiled = np.zeros_like(backdrop)
+    for mask in new_masks:
+        compiled = cv2.bitwise_or(compiled, mask)
+
+    # get binary mask
+    binary_mask = cv2.cvtColor(compiled, cv2.COLOR_BGR2GRAY)
+    binary_mask = cv2.threshold(binary_mask, 0, 255, cv2.THRESH_BINARY)[1]
+
+    # crop out the background
+    background = cv2.bitwise_and(backdrop, backdrop, mask=cv2.bitwise_not(binary_mask))
+
+    # combine the two images to get the final image!
+    return cv2.bitwise_or(compiled, background), new_contours
