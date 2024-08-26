@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='phy_cut_paste',
-    version='0.3.0',
+    version='0.4.0',
     description='Cut-And-Paste Data Augmentation for Multiple Annotations',
     author='Jack Mead',
     author_email='jackmead515@gmail.com',

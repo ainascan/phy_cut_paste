@@ -35,7 +35,23 @@ class ContourSimulationConfig:
     elasticitiy: float = 0.95
     friction: float = 0.1
     body_type: str = 'dynamic'
+
+
+def iou_contours(c1, c2):
+    """Calculates the intersection over union of two contours"""
+    max_width = max(c1[:, 0].max(), c2[:, 0].max()).astype(np.int32)
+    max_height = max(c1[:, 1].max(), c2[:, 1].max()).astype(np.int32)
+    m1 = np.zeros((max_height, max_width), dtype=np.uint8)
+    m2 = np.zeros((max_height, max_width), dtype=np.uint8)
     
+    cv2.fillPoly(m1, [c1.astype(np.int32)], 1)
+    cv2.fillPoly(m2, [c2.astype(np.int32)], 1)
+    
+    intersection = np.logical_and(m1, m2).sum()
+    union = np.logical_or(m1, m2).sum()
+    
+    return intersection / union
+
 
 def load_coco_data(coco_file) -> list[tuple[dict, list[dict]]]:
     with open(coco_file, 'r') as f:
@@ -303,7 +319,10 @@ def simulate(
 def simulate_masks(
     masks: list[np.ndarray],
     backdrop: np.ndarray,
+    contour_boundaries: list[np.ndarray] = None,
     mask_configs: list[ContourSimulationConfig] = None,
+    strict: bool = True,
+    contour_boundary_add_delay: int = 1000,
     boundary_elasticity: float = 0.95,
     boundary_friction: float = 0.1,
     timesteps: int = 1000,
@@ -319,7 +338,10 @@ def simulate_masks(
     Args:
         masks (list[np.ndarray]): The list of masks to simulate
         backdrop (np.ndarray): The backdrop image to layer the simulated contours on
+        contour_boundaries (list[np.ndarray]): A list of contours to act as boundaries. Defaults to None.
         mask_configs (list[ContourSimulationConfig], optional): The list of configurations for each contour. Defaults to None.
+        strict (bool, optional): If True, the final simulation will only include contours that do not overlap with the contour_boundaries or fall outside of the frame boundaries. Defaults to True.
+        contour_boundary_add_delay (int, optional): The delay in timesteps to add the contour boundaries. Defaults to 1000.
         boundary_elasticitiy (float, optional): Defaults to 0.95.
         boundary_friction (float, optional): Defaults to 0.1.
         timesteps (int, optional): Timestamps in seconds. Defaults to 1000.
@@ -411,18 +433,39 @@ def simulate_masks(
         pm.Segment(space.static_body, (0, height), (0, 0), 2),
     ]
     
+    extra_boundaries = []
+    
+    if contour_boundaries:
+        for boundary in contour_boundaries:
+            c = boundary.astype(float).tolist()
+            poly = pm.Poly(space.static_body, c)
+            poly.friction = boundary_friction
+            poly.elasticity = boundary_elasticity
+            extra_boundaries.append(poly)
+    
     for boundary in boundaries:
         boundary.friction = boundary_friction
         boundary.elasticity = boundary_elasticity
     
     space.add(*boundaries)
     
+    # add the extra boundaries over time so collisions can be handled more gracefully
+    steps = 0
+    while len(extra_boundaries) > 0:
+        space.step(timestep_delta)
+        steps += 1
+        if steps % contour_boundary_add_delay == 0:
+            steps = 0
+            space.add(extra_boundaries.pop())
+
+    # run the simulation
     for _ in range(timesteps):
         space.step(timestep_delta)
 
+
+    # gather the new masks and contours
     new_masks = []
     new_contours = []
-    
     index = 0
     for contour, body in objects:
         mask = resized_masks[index]
@@ -436,9 +479,33 @@ def simulate_masks(
         
         index += 1
 
+    # perform a strict bounds check: filter out all new_contours that overlap with the original contours or are outside the image bounds
+    final_masks = []
+    final_contours = []
+    if strict:
+        for new_contour, new_mask in zip(new_contours, new_masks):
+            # check if the new contour is outside the image bounds
+            if np.any(new_contour < 0) or np.any(contour > np.array(backdrop.shape[:2])):
+                continue
+            
+            # check if the new contour overlaps with the original contours
+            skip = False
+            if contour_boundaries:
+                for boundary in contour_boundaries:
+                    if iou_contours(new_contour, boundary) > 0:
+                        skip = True
+                        break
+                    
+            if not skip:
+                final_contours.append(new_contour)
+                final_masks.append(new_mask)
+    else:
+        final_masks = new_masks
+        final_contours = new_contours
+
     # layer the masks on top of each other
     compiled = np.zeros_like(backdrop)
-    for mask in new_masks:
+    for mask in final_masks:
         compiled = cv2.bitwise_or(compiled, mask)
 
     # get binary mask
@@ -449,4 +516,4 @@ def simulate_masks(
     background = cv2.bitwise_and(backdrop, backdrop, mask=cv2.bitwise_not(binary_mask))
 
     # combine the two images to get the final image!
-    return cv2.bitwise_or(compiled, background), new_contours
+    return cv2.bitwise_or(compiled, background), final_contours
